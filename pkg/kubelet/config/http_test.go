@@ -23,16 +23,18 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	utiltesting "k8s.io/client-go/util/testing"
+	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/api/testapi"
-	"k8s.io/kubernetes/pkg/api/unversioned"
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/api/validation"
-	"k8s.io/kubernetes/pkg/apimachinery/registered"
+	api "k8s.io/kubernetes/pkg/apis/core"
+	k8s_api_v1 "k8s.io/kubernetes/pkg/apis/core/v1"
+	"k8s.io/kubernetes/pkg/apis/core/validation"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
-	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/types"
-	utiltesting "k8s.io/kubernetes/pkg/util/testing"
 )
 
 func TestURLErrorNotExistNoUpdate(t *testing.T) {
@@ -61,16 +63,16 @@ func TestExtractInvalidPods(t *testing.T) {
 	}{
 		{
 			desc: "No version",
-			pod:  &v1.Pod{TypeMeta: unversioned.TypeMeta{APIVersion: ""}},
+			pod:  &v1.Pod{TypeMeta: metav1.TypeMeta{APIVersion: ""}},
 		},
 		{
 			desc: "Invalid version",
-			pod:  &v1.Pod{TypeMeta: unversioned.TypeMeta{APIVersion: "v1betta2"}},
+			pod:  &v1.Pod{TypeMeta: metav1.TypeMeta{APIVersion: "v1betta2"}},
 		},
 		{
 			desc: "Invalid volume name",
 			pod: &v1.Pod{
-				TypeMeta: unversioned.TypeMeta{APIVersion: registered.GroupOrDie(v1.GroupName).GroupVersion.String()},
+				TypeMeta: metav1.TypeMeta{APIVersion: "v1"},
 				Spec: v1.PodSpec{
 					Volumes: []v1.Volume{{Name: "_INVALID_"}},
 				},
@@ -79,7 +81,7 @@ func TestExtractInvalidPods(t *testing.T) {
 		{
 			desc: "Duplicate volume names",
 			pod: &v1.Pod{
-				TypeMeta: unversioned.TypeMeta{APIVersion: registered.GroupOrDie(v1.GroupName).GroupVersion.String()},
+				TypeMeta: metav1.TypeMeta{APIVersion: "v1"},
 				Spec: v1.PodSpec{
 					Volumes: []v1.Volume{{Name: "repeated"}, {Name: "repeated"}},
 				},
@@ -88,7 +90,7 @@ func TestExtractInvalidPods(t *testing.T) {
 		{
 			desc: "Unspecified container name",
 			pod: &v1.Pod{
-				TypeMeta: unversioned.TypeMeta{APIVersion: registered.GroupOrDie(v1.GroupName).GroupVersion.String()},
+				TypeMeta: metav1.TypeMeta{APIVersion: "v1"},
 				Spec: v1.PodSpec{
 					Containers: []v1.Container{{Name: ""}},
 				},
@@ -97,7 +99,7 @@ func TestExtractInvalidPods(t *testing.T) {
 		{
 			desc: "Invalid container name",
 			pod: &v1.Pod{
-				TypeMeta: unversioned.TypeMeta{APIVersion: registered.GroupOrDie(v1.GroupName).GroupVersion.String()},
+				TypeMeta: metav1.TypeMeta{APIVersion: "v1"},
 				Spec: v1.PodSpec{
 					Containers: []v1.Container{{Name: "_INVALID_"}},
 				},
@@ -127,6 +129,7 @@ func TestExtractPodsFromHTTP(t *testing.T) {
 	nodeName := "different-value"
 
 	grace := int64(30)
+	enableServiceLinks := v1.DefaultEnableServiceLinks
 	var testCases = []struct {
 		desc     string
 		pods     runtime.Object
@@ -135,19 +138,20 @@ func TestExtractPodsFromHTTP(t *testing.T) {
 		{
 			desc: "Single pod",
 			pods: &v1.Pod{
-				TypeMeta: unversioned.TypeMeta{
+				TypeMeta: metav1.TypeMeta{
 					Kind:       "Pod",
 					APIVersion: "",
 				},
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Name:      "foo",
 					UID:       "111",
 					Namespace: "mynamespace",
 				},
 				Spec: v1.PodSpec{
 					NodeName:        string(nodeName),
-					Containers:      []v1.Container{{Name: "1", Image: "foo", ImagePullPolicy: v1.PullAlways}},
+					Containers:      []v1.Container{{Name: "1", Image: "foo", ImagePullPolicy: v1.PullAlways, TerminationMessagePolicy: v1.TerminationMessageReadFile}},
 					SecurityContext: &v1.PodSecurityContext{},
+					SchedulerName:   api.DefaultSchedulerName,
 				},
 				Status: v1.PodStatus{
 					Phase: v1.PodPending,
@@ -156,7 +160,7 @@ func TestExtractPodsFromHTTP(t *testing.T) {
 			expected: CreatePodUpdate(kubetypes.SET,
 				kubetypes.HTTPSource,
 				&v1.Pod{
-					ObjectMeta: v1.ObjectMeta{
+					ObjectMeta: metav1.ObjectMeta{
 						UID:         "111",
 						Name:        "foo" + "-" + nodeName,
 						Namespace:   "mynamespace",
@@ -169,12 +173,15 @@ func TestExtractPodsFromHTTP(t *testing.T) {
 						DNSPolicy:                     v1.DNSClusterFirst,
 						SecurityContext:               &v1.PodSecurityContext{},
 						TerminationGracePeriodSeconds: &grace,
+						SchedulerName:                 api.DefaultSchedulerName,
+						EnableServiceLinks:            &enableServiceLinks,
 
 						Containers: []v1.Container{{
-							Name:  "1",
-							Image: "foo",
-							TerminationMessagePath: "/dev/termination-log",
-							ImagePullPolicy:        "Always",
+							Name:                     "1",
+							Image:                    "foo",
+							TerminationMessagePath:   "/dev/termination-log",
+							ImagePullPolicy:          "Always",
+							TerminationMessagePolicy: v1.TerminationMessageReadFile,
 						}},
 					},
 					Status: v1.PodStatus{
@@ -185,34 +192,36 @@ func TestExtractPodsFromHTTP(t *testing.T) {
 		{
 			desc: "Multiple pods",
 			pods: &v1.PodList{
-				TypeMeta: unversioned.TypeMeta{
+				TypeMeta: metav1.TypeMeta{
 					Kind:       "PodList",
 					APIVersion: "",
 				},
 				Items: []v1.Pod{
 					{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Name: "foo",
 							UID:  "111",
 						},
 						Spec: v1.PodSpec{
 							NodeName:        nodeName,
-							Containers:      []v1.Container{{Name: "1", Image: "foo", ImagePullPolicy: v1.PullAlways}},
+							Containers:      []v1.Container{{Name: "1", Image: "foo", ImagePullPolicy: v1.PullAlways, TerminationMessagePolicy: v1.TerminationMessageReadFile}},
 							SecurityContext: &v1.PodSecurityContext{},
+							SchedulerName:   api.DefaultSchedulerName,
 						},
 						Status: v1.PodStatus{
 							Phase: v1.PodPending,
 						},
 					},
 					{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Name: "bar",
 							UID:  "222",
 						},
 						Spec: v1.PodSpec{
 							NodeName:        nodeName,
-							Containers:      []v1.Container{{Name: "2", Image: "bar:bartag", ImagePullPolicy: ""}},
+							Containers:      []v1.Container{{Name: "2", Image: "bar:bartag", ImagePullPolicy: "", TerminationMessagePolicy: v1.TerminationMessageReadFile}},
 							SecurityContext: &v1.PodSecurityContext{},
+							SchedulerName:   api.DefaultSchedulerName,
 						},
 						Status: v1.PodStatus{
 							Phase: v1.PodPending,
@@ -223,12 +232,12 @@ func TestExtractPodsFromHTTP(t *testing.T) {
 			expected: CreatePodUpdate(kubetypes.SET,
 				kubetypes.HTTPSource,
 				&v1.Pod{
-					ObjectMeta: v1.ObjectMeta{
+					ObjectMeta: metav1.ObjectMeta{
 						UID:         "111",
 						Name:        "foo" + "-" + nodeName,
 						Namespace:   "default",
 						Annotations: map[string]string{kubetypes.ConfigHashAnnotationKey: "111"},
-						SelfLink:    getSelfLink("foo-"+nodeName, kubetypes.NamespaceDefault),
+						SelfLink:    getSelfLink("foo-"+nodeName, metav1.NamespaceDefault),
 					},
 					Spec: v1.PodSpec{
 						NodeName:                      nodeName,
@@ -236,12 +245,15 @@ func TestExtractPodsFromHTTP(t *testing.T) {
 						DNSPolicy:                     v1.DNSClusterFirst,
 						TerminationGracePeriodSeconds: &grace,
 						SecurityContext:               &v1.PodSecurityContext{},
+						SchedulerName:                 api.DefaultSchedulerName,
+						EnableServiceLinks:            &enableServiceLinks,
 
 						Containers: []v1.Container{{
-							Name:  "1",
-							Image: "foo",
-							TerminationMessagePath: "/dev/termination-log",
-							ImagePullPolicy:        "Always",
+							Name:                     "1",
+							Image:                    "foo",
+							TerminationMessagePath:   "/dev/termination-log",
+							ImagePullPolicy:          "Always",
+							TerminationMessagePolicy: v1.TerminationMessageReadFile,
 						}},
 					},
 					Status: v1.PodStatus{
@@ -249,12 +261,12 @@ func TestExtractPodsFromHTTP(t *testing.T) {
 					},
 				},
 				&v1.Pod{
-					ObjectMeta: v1.ObjectMeta{
+					ObjectMeta: metav1.ObjectMeta{
 						UID:         "222",
 						Name:        "bar" + "-" + nodeName,
 						Namespace:   "default",
 						Annotations: map[string]string{kubetypes.ConfigHashAnnotationKey: "222"},
-						SelfLink:    getSelfLink("bar-"+nodeName, kubetypes.NamespaceDefault),
+						SelfLink:    getSelfLink("bar-"+nodeName, metav1.NamespaceDefault),
 					},
 					Spec: v1.PodSpec{
 						NodeName:                      nodeName,
@@ -262,12 +274,15 @@ func TestExtractPodsFromHTTP(t *testing.T) {
 						DNSPolicy:                     v1.DNSClusterFirst,
 						TerminationGracePeriodSeconds: &grace,
 						SecurityContext:               &v1.PodSecurityContext{},
+						SchedulerName:                 api.DefaultSchedulerName,
+						EnableServiceLinks:            &enableServiceLinks,
 
 						Containers: []v1.Container{{
-							Name:  "2",
-							Image: "bar:bartag",
-							TerminationMessagePath: "/dev/termination-log",
-							ImagePullPolicy:        "IfNotPresent",
+							Name:                     "2",
+							Image:                    "bar:bartag",
+							TerminationMessagePath:   "/dev/termination-log",
+							ImagePullPolicy:          "IfNotPresent",
+							TerminationMessagePolicy: v1.TerminationMessageReadFile,
 						}},
 					},
 					Status: v1.PodStatus{
@@ -279,7 +294,7 @@ func TestExtractPodsFromHTTP(t *testing.T) {
 
 	for _, testCase := range testCases {
 		var versionedPods runtime.Object
-		err := testapi.Default.Converter().Convert(&testCase.pods, &versionedPods, nil)
+		err := legacyscheme.Scheme.Convert(&testCase.pods, &versionedPods, nil)
 		if err != nil {
 			t.Fatalf("%s: error in versioning the pods: %s", testCase.desc, err)
 		}
@@ -301,13 +316,13 @@ func TestExtractPodsFromHTTP(t *testing.T) {
 		}
 		update := (<-ch).(kubetypes.PodUpdate)
 
-		if !api.Semantic.DeepEqual(testCase.expected, update) {
+		if !apiequality.Semantic.DeepEqual(testCase.expected, update) {
 			t.Errorf("%s: Expected: %#v, Got: %#v", testCase.desc, testCase.expected, update)
 		}
 		for _, pod := range update.Pods {
 			// TODO: remove the conversion when validation is performed on versioned objects.
 			internalPod := &api.Pod{}
-			if err := v1.Convert_v1_Pod_To_api_Pod(pod, internalPod, nil); err != nil {
+			if err := k8s_api_v1.Convert_v1_Pod_To_core_Pod(pod, internalPod, nil); err != nil {
 				t.Fatalf("%s: Cannot convert pod %#v, %#v", testCase.desc, pod, err)
 			}
 			if errs := validation.ValidatePod(internalPod); len(errs) != 0 {
@@ -319,11 +334,11 @@ func TestExtractPodsFromHTTP(t *testing.T) {
 
 func TestURLWithHeader(t *testing.T) {
 	pod := &v1.Pod{
-		TypeMeta: unversioned.TypeMeta{
-			APIVersion: registered.GroupOrDie(v1.GroupName).GroupVersion.String(),
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
 			Kind:       "Pod",
 		},
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:      "foo",
 			UID:       "111",
 			Namespace: "mynamespace",

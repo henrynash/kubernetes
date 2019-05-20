@@ -17,13 +17,13 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-export KUBE_ROOT=$(dirname "${BASH_SOURCE}")/..
+KUBE_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
+export KUBE_ROOT
 source "${KUBE_ROOT}/hack/lib/init.sh"
 
 
 cd "${KUBE_ROOT}"
 if ! hack/update_owners.py --check; then
     echo 'Run ./hack/update_owners.py to fix it'
-    exit  # TODO(rmmh): fix Github merging to respect .gitattributes
     exit 1
 fi

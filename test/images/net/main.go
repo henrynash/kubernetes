@@ -33,11 +33,6 @@ import (
 
 type runnerMap map[string]common.Runner
 
-type runRequestJSON struct {
-	runner  string
-	options interface{}
-}
-
 var (
 	// flags for the command line. See usage args below for
 	// descriptions.
@@ -122,7 +117,7 @@ func executeRunner(name string, rawOptions string) (logOutput, error) {
 		return output, runner.Run(logger, options)
 	}
 
-	return logOutput{}, fmt.Errorf("Invalid runner: '%v', see --help\n", runner)
+	return logOutput{}, fmt.Errorf("Invalid runner: '%v', see --help", runner)
 }
 
 // handleRunRequest handles a request JSON to the network tester.
@@ -156,7 +151,4 @@ func handleRunRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fmt.Fprintf(w, "ok\noutput:\n\n"+output.b.String())
-}
-
-func setupLogger() {
 }

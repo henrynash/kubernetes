@@ -18,19 +18,19 @@ package flocker
 
 import (
 	"fmt"
-	"time"
 
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/util/rand"
-	"k8s.io/kubernetes/pkg/volume"
+	"k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/rand"
 
-	flockerApi "github.com/clusterhq/flocker-go"
-	"github.com/golang/glog"
+	volumehelpers "k8s.io/cloud-provider/volume/helpers"
+
+	flockerapi "github.com/clusterhq/flocker-go"
+	"k8s.io/klog"
 )
 
-type FlockerUtil struct{}
+type flockerUtil struct{}
 
-func (util *FlockerUtil) DeleteVolume(d *flockerVolumeDeleter) error {
+func (util *flockerUtil) DeleteVolume(d *flockerVolumeDeleter) error {
 	var err error
 
 	if d.flockerClient == nil {
@@ -48,7 +48,7 @@ func (util *FlockerUtil) DeleteVolume(d *flockerVolumeDeleter) error {
 	return d.flockerClient.DeleteDataset(datasetUUID)
 }
 
-func (util *FlockerUtil) CreateVolume(c *flockerVolumeProvisioner) (datasetUUID string, volumeSizeGB int, labels map[string]string, err error) {
+func (util *flockerUtil) CreateVolume(c *flockerVolumeProvisioner) (datasetUUID string, volumeSizeGiB int, labels map[string]string, err error) {
 
 	if c.flockerClient == nil {
 		c.flockerClient, err = c.plugin.newFlockerClient("")
@@ -67,15 +67,17 @@ func (util *FlockerUtil) CreateVolume(c *flockerVolumeProvisioner) (datasetUUID 
 	}
 
 	// select random node
-	rand.Seed(time.Now().UTC().UnixNano())
 	node := nodes[rand.Intn(len(nodes))]
-	glog.V(2).Infof("selected flocker node with UUID '%s' to provision dataset", node.UUID)
+	klog.V(2).Infof("selected flocker node with UUID '%s' to provision dataset", node.UUID)
 
 	capacity := c.options.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
 	requestBytes := capacity.Value()
-	volumeSizeGB = int(volume.RoundUpSize(requestBytes, 1024*1024*1024))
+	volumeSizeGiB, err = volumehelpers.RoundUpToGiBInt(capacity)
+	if err != nil {
+		return
+	}
 
-	createOptions := &flockerApi.CreateDatasetOptions{
+	createOptions := &flockerapi.CreateDatasetOptions{
 		MaximumSize: requestBytes,
 		Metadata: map[string]string{
 			"type": "k8s-dynamic-prov",
@@ -90,7 +92,7 @@ func (util *FlockerUtil) CreateVolume(c *flockerVolumeProvisioner) (datasetUUID 
 	}
 	datasetUUID = datasetState.DatasetID
 
-	glog.V(2).Infof("successfully created Flocker dataset with UUID '%s'", datasetUUID)
+	klog.V(2).Infof("successfully created Flocker dataset with UUID '%s'", datasetUUID)
 
 	return
 }

@@ -17,27 +17,25 @@ limitations under the License.
 package common
 
 import (
-	"fmt"
-
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/kubelet/events"
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/kubernetes/pkg/kubelet/sysctl"
-	"k8s.io/kubernetes/pkg/util/uuid"
-	"k8s.io/kubernetes/pkg/util/wait"
 	"k8s.io/kubernetes/test/e2e/framework"
+	imageutils "k8s.io/kubernetes/test/utils/image"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
 
-var _ = framework.KubeDescribe("Sysctls", func() {
+var _ = framework.KubeDescribe("Sysctls [NodeFeature:Sysctls]", func() {
 	f := framework.NewDefaultFramework("sysctl")
 	var podClient *framework.PodClient
 
 	testPod := func() *v1.Pod {
 		podName := "sysctl-" + string(uuid.NewUUID())
 		pod := v1.Pod{
-			ObjectMeta: v1.ObjectMeta{
+			ObjectMeta: metav1.ObjectMeta{
 				Name:        podName,
 				Annotations: map[string]string{},
 			},
@@ -45,7 +43,7 @@ var _ = framework.KubeDescribe("Sysctls", func() {
 				Containers: []v1.Container{
 					{
 						Name:  "test-container",
-						Image: "gcr.io/google_containers/busybox:1.24",
+						Image: imageutils.GetE2EImage(imageutils.BusyBox),
 					},
 				},
 				RestartPolicy: v1.RestartPolicyNever,
@@ -55,39 +53,20 @@ var _ = framework.KubeDescribe("Sysctls", func() {
 		return &pod
 	}
 
-	waitForPodErrorEventOrStarted := func(pod *v1.Pod) (*v1.Event, error) {
-		var ev *v1.Event
-		err := wait.Poll(framework.Poll, framework.PodStartTimeout, func() (bool, error) {
-			evnts, err := f.ClientSet.Core().Events(pod.Namespace).Search(pod)
-			if err != nil {
-				return false, fmt.Errorf("error in listing events: %s", err)
-			}
-			for _, e := range evnts.Items {
-				switch e.Reason {
-				case sysctl.UnsupportedReason, sysctl.ForbiddenReason:
-					ev = &e
-					return true, nil
-				case events.StartedContainer:
-					return true, nil
-				}
-			}
-			return false, nil
-		})
-		return ev, err
-	}
-
 	BeforeEach(func() {
 		podClient = f.PodClient()
 	})
 
 	It("should support sysctls", func() {
 		pod := testPod()
-		pod.Annotations[v1.SysctlsPodAnnotationKey] = v1.PodAnnotationsFromSysctls([]v1.Sysctl{
-			{
-				Name:  "kernel.shm_rmid_forced",
-				Value: "1",
+		pod.Spec.SecurityContext = &v1.PodSecurityContext{
+			Sysctls: []v1.Sysctl{
+				{
+					Name:  "kernel.shm_rmid_forced",
+					Value: "1",
+				},
 			},
-		})
+		}
 		pod.Spec.Containers[0].Command = []string{"/bin/sysctl", "kernel.shm_rmid_forced"}
 
 		By("Creating a pod with the kernel.shm_rmid_forced sysctl")
@@ -97,8 +76,8 @@ var _ = framework.KubeDescribe("Sysctls", func() {
 		// watch for events instead of termination of pod because the kubelet deletes
 		// failed pods without running containers. This would create a race as the pod
 		// might have already been deleted here.
-		ev, err := waitForPodErrorEventOrStarted(pod)
-		Expect(err).NotTo(HaveOccurred())
+		ev, err := f.PodClient().WaitForErrorEventOrSuccess(pod)
+		framework.ExpectNoError(err)
 		if ev != nil && ev.Reason == sysctl.UnsupportedReason {
 			framework.Skipf("No sysctl support in Docker <1.12")
 		}
@@ -106,16 +85,16 @@ var _ = framework.KubeDescribe("Sysctls", func() {
 
 		By("Waiting for pod completion")
 		err = f.WaitForPodNoLongerRunning(pod.Name)
-		Expect(err).NotTo(HaveOccurred())
-		pod, err = podClient.Get(pod.Name)
-		Expect(err).NotTo(HaveOccurred())
+		framework.ExpectNoError(err)
+		pod, err = podClient.Get(pod.Name, metav1.GetOptions{})
+		framework.ExpectNoError(err)
 
 		By("Checking that the pod succeeded")
 		Expect(pod.Status.Phase).To(Equal(v1.PodSucceeded))
 
 		By("Getting logs from the pod")
 		log, err := framework.GetPodLogs(f.ClientSet, f.Namespace.Name, pod.Name, pod.Spec.Containers[0].Name)
-		Expect(err).NotTo(HaveOccurred())
+		framework.ExpectNoError(err)
 
 		By("Checking that the sysctl is actually updated")
 		Expect(log).To(ContainSubstring("kernel.shm_rmid_forced = 1"))
@@ -123,12 +102,14 @@ var _ = framework.KubeDescribe("Sysctls", func() {
 
 	It("should support unsafe sysctls which are actually whitelisted", func() {
 		pod := testPod()
-		pod.Annotations[v1.UnsafeSysctlsPodAnnotationKey] = v1.PodAnnotationsFromSysctls([]v1.Sysctl{
-			{
-				Name:  "kernel.shm_rmid_forced",
-				Value: "1",
+		pod.Spec.SecurityContext = &v1.PodSecurityContext{
+			Sysctls: []v1.Sysctl{
+				{
+					Name:  "kernel.shm_rmid_forced",
+					Value: "1",
+				},
 			},
-		})
+		}
 		pod.Spec.Containers[0].Command = []string{"/bin/sysctl", "kernel.shm_rmid_forced"}
 
 		By("Creating a pod with the kernel.shm_rmid_forced sysctl")
@@ -138,8 +119,8 @@ var _ = framework.KubeDescribe("Sysctls", func() {
 		// watch for events instead of termination of pod because the kubelet deletes
 		// failed pods without running containers. This would create a race as the pod
 		// might have already been deleted here.
-		ev, err := waitForPodErrorEventOrStarted(pod)
-		Expect(err).NotTo(HaveOccurred())
+		ev, err := f.PodClient().WaitForErrorEventOrSuccess(pod)
+		framework.ExpectNoError(err)
 		if ev != nil && ev.Reason == sysctl.UnsupportedReason {
 			framework.Skipf("No sysctl support in Docker <1.12")
 		}
@@ -147,16 +128,16 @@ var _ = framework.KubeDescribe("Sysctls", func() {
 
 		By("Waiting for pod completion")
 		err = f.WaitForPodNoLongerRunning(pod.Name)
-		Expect(err).NotTo(HaveOccurred())
-		pod, err = podClient.Get(pod.Name)
-		Expect(err).NotTo(HaveOccurred())
+		framework.ExpectNoError(err)
+		pod, err = podClient.Get(pod.Name, metav1.GetOptions{})
+		framework.ExpectNoError(err)
 
 		By("Checking that the pod succeeded")
 		Expect(pod.Status.Phase).To(Equal(v1.PodSucceeded))
 
 		By("Getting logs from the pod")
 		log, err := framework.GetPodLogs(f.ClientSet, f.Namespace.Name, pod.Name, pod.Spec.Containers[0].Name)
-		Expect(err).NotTo(HaveOccurred())
+		framework.ExpectNoError(err)
 
 		By("Checking that the sysctl is actually updated")
 		Expect(log).To(ContainSubstring("kernel.shm_rmid_forced = 1"))
@@ -164,54 +145,49 @@ var _ = framework.KubeDescribe("Sysctls", func() {
 
 	It("should reject invalid sysctls", func() {
 		pod := testPod()
-		pod.Annotations[v1.SysctlsPodAnnotationKey] = v1.PodAnnotationsFromSysctls([]v1.Sysctl{
-			{
-				Name:  "foo-",
-				Value: "bar",
+		pod.Spec.SecurityContext = &v1.PodSecurityContext{
+			Sysctls: []v1.Sysctl{
+				// Safe parameters
+				{
+					Name:  "foo-",
+					Value: "bar",
+				},
+				{
+					Name:  "kernel.shmmax",
+					Value: "100000000",
+				},
+				{
+					Name:  "safe-and-unsafe",
+					Value: "100000000",
+				},
+				{
+					Name:  "bar..",
+					Value: "42",
+				},
 			},
-			{
-				Name:  "kernel.shmmax",
-				Value: "100000000",
-			},
-			{
-				Name:  "safe-and-unsafe",
-				Value: "100000000",
-			},
-		})
-		pod.Annotations[v1.UnsafeSysctlsPodAnnotationKey] = v1.PodAnnotationsFromSysctls([]v1.Sysctl{
-			{
-				Name:  "kernel.shmall",
-				Value: "100000000",
-			},
-			{
-				Name:  "bar..",
-				Value: "42",
-			},
-			{
-				Name:  "safe-and-unsafe",
-				Value: "100000000",
-			},
-		})
+		}
 
 		By("Creating a pod with one valid and two invalid sysctls")
-		client := f.ClientSet.Core().Pods(f.Namespace.Name)
+		client := f.ClientSet.CoreV1().Pods(f.Namespace.Name)
 		_, err := client.Create(pod)
 
 		Expect(err).NotTo(BeNil())
 		Expect(err.Error()).To(ContainSubstring(`Invalid value: "foo-"`))
 		Expect(err.Error()).To(ContainSubstring(`Invalid value: "bar.."`))
-		Expect(err.Error()).To(ContainSubstring(`safe-and-unsafe`))
+		Expect(err.Error()).NotTo(ContainSubstring(`safe-and-unsafe`))
 		Expect(err.Error()).NotTo(ContainSubstring("kernel.shmmax"))
 	})
 
 	It("should not launch unsafe, but not explicitly enabled sysctls on the node", func() {
 		pod := testPod()
-		pod.Annotations[v1.SysctlsPodAnnotationKey] = v1.PodAnnotationsFromSysctls([]v1.Sysctl{
-			{
-				Name:  "kernel.msgmax",
-				Value: "10000000000",
+		pod.Spec.SecurityContext = &v1.PodSecurityContext{
+			Sysctls: []v1.Sysctl{
+				{
+					Name:  "kernel.msgmax",
+					Value: "10000000000",
+				},
 			},
-		})
+		}
 
 		By("Creating a pod with a greylisted, but not whitelisted sysctl on the node")
 		pod = podClient.Create(pod)
@@ -220,8 +196,8 @@ var _ = framework.KubeDescribe("Sysctls", func() {
 		// watch for events instead of termination of pod because the kubelet deletes
 		// failed pods without running containers. This would create a race as the pod
 		// might have already been deleted here.
-		ev, err := waitForPodErrorEventOrStarted(pod)
-		Expect(err).NotTo(HaveOccurred())
+		ev, err := f.PodClient().WaitForErrorEventOrSuccess(pod)
+		framework.ExpectNoError(err)
 		if ev != nil && ev.Reason == sysctl.UnsupportedReason {
 			framework.Skipf("No sysctl support in Docker <1.12")
 		}
